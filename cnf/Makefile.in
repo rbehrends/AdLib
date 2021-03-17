@@ -1,0 +1,57 @@
+# MAKEFLAGS=-j4
+
+BUILDDIR=@BUILDDIR@
+BINDIR=@BINDIR@
+TESTS=@TESTS@
+PROGS=@PROGS@
+CHECKS=@CHECKS@
+TARGETS=$(PROGS) $(TESTS)
+CONFIGITEMS=@CONFIGITEMS@
+LIBS=@LIBS@
+INCLUDES=@INCLUDES@
+GENERATED=@GENERATED@
+CC=@CC@
+CXX=@CXX@
+OPT=@OPT@
+CFLAGS=$(OPT) @CFLAGS@
+CXXFLAGS=$(OPT) @CXXFLAGS@
+LDFLAGS=
+MKDIR=@mkdir -p
+RM=rm
+RE2C=@RE2C@
+DEFAULT_TARGET=@DEFAULT_TARGET@
+
+all: $(DEFAULT_TARGET) .FORCE .QUIET
+
+@EXTRA@
+
+RE2CFLAGS?=@RE2CFLAGS@
+
+debug: .FORCE .QUIET
+	$(MAKE) CHECKS=1
+prog: $(PROGS) .FORCE .QUIET
+
+test: $(TESTS) .FORCE .QUIET
+	@for test in @TESTS@; do \
+	  echo === $$test ===; \
+	  $$test; \
+	done
+tests: $(TESTS) .FORCE .QUIET
+reformat: .FORCE .QUIET
+	clang-format -style=file -i `find adlib src -name '*.cc' -o -name '*.h'`
+config deps: .FORCE .QUIET
+	./configure @CONFIG_ARGS@
+clean: .FORCE .QUIET
+	$(RM) -rf $(BUILDDIR)
+cleanall: clean .FORCE .QUIET
+	$(RM) -f $(PROGS) $(GENERATED)
+distclean: cleanall .FORCE .QUIET
+	$(RM) -f $(CONFIGITEMS)
+	$(RM) -f Makefile autosetup/jimsh0 config.log
+.FORCE:
+.QUIET:
+	@:
+.PHONY: test tests all debug prog debug config deps \
+	clean cleanall distclean scrub reformat \
+	.QUIET .FORCE
+@RULES@

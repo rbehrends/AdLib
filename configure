@@ -1,0 +1,50 @@
+#!/bin/sh
+set -e
+findbuilddir() {
+  _cmd="$1"
+  case "$_cmd" in
+  */*)
+    ;;
+  *)
+    _cmd="$(command -v "$_cmd" || printf "%s" "$_cmd")"
+    ;;
+  esac
+  _dir="$(dirname "$_cmd")"
+  _dir="$(cd "$_dir" 2>/dev/null ; pwd)"
+  export BUILDROOT="$_dir"
+}
+findbuilddir "$0"
+BUILDTYPE=default
+for confdir in setup develop; do
+  confextra="$BUILDROOT/$confdir/config.sh"
+  test -f "$confextra" && test -r "$confextra" && . "$confextra"
+done
+AUTOSETUP_CONF="$BUILDROOT"/tools/autosetup/configure
+if [ -f "$BUILDROOT/develop/waf" ]; then
+  WAF="$BUILDROOT/develop/waf"
+else
+  WAF="$BUILDROOT/tools/waf"
+fi
+case "$BUILDTYPE" in
+autosetup)
+  if test -f "$AUTOSETUP_CONF" && test -f auto.def; then
+    . "$AUTOSETUP_CONF"
+  else
+    echo "error: autosetup build mode not available"
+  fi
+  ;;
+waf)
+  if test -f "$WAF" && test -f wscript; then
+    "$WAF" configure "$@"
+  else
+    echo "error: waf build mode not available"
+  fi
+  ;;
+*)
+  if test -f "$AUTOSETUP_CONF" && test -f auto.def; then
+    . "$AUTOSETUP_CONF"
+  else
+    "$WAF" configure "$@"
+  fi
+  ;;
+esac

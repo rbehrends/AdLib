@@ -1,0 +1,519 @@
+# vim:set ft=tcl:
+
+global builddir bindir libraries programs tests
+global progs boehm makevars generated options use_re2c
+
+set builddir "build"
+set bindir "bin"
+set tests {}
+set progs {}
+set programs {}
+set libraries {adlib {}}
+set boehm 0
+set generated {}
+set makevars {}
+
+set options {
+  with-boehm-gc:=yes => "Use the Boehm GC; the argument can be yes, no, or a path to the GC's installation directory."
+  with-re2c => "Enable re2c."
+  adlibdev => "Change Makefile defaults for AdLib core development."
+  checks => "Enable contract checking (implied by --adlibdev)."
+}
+
+proc source? {file} {
+  if {[file exists setup/$file]} {
+    uplevel #0 source setup/$file
+  }
+  if {[file exists develop/$file]} {
+    uplevel #0 source develop/$file
+  }
+}
+
+proc add-program {name dir args} {
+  global programs
+  set deps $args
+  if {[lsearch $deps adlib] < 0} {
+    lappend deps adlib
+  }
+  lappend programs $name $dir $deps
+}
+
+proc add-library {name args} {
+  global libraries
+  set deps $args
+  if {[lsearch $deps adlib] < 0} {
+    lappend deps adlib
+  }
+  lappend libraries $name $deps
+}
+
+proc add-makefile-var {name value} {
+  global makevars
+  lappend makevars $name $value
+}
+
+proc add-dependency {target deps args} {
+  global build_deps build_tasks generated
+  set build_deps($target) $deps
+  set build_tasks($target) $args
+  lappend generated {*}$target
+}
+
+proc add-generated-file {target} {
+  global generated
+  lappend generated $target
+}
+
+proc add-options {args} {
+  global options
+  lappend options {*}$args
+}
+
+define CONFIG_ARGS $::argv
+
+use cc cc-lib cc-db cc-shared
+
+set preconf "preconf.tcl"
+set postconf "postconf.tcl"
+set presetup "presetup.tcl"
+set postsetup "postsetup.tcl"
+set makeextra "Makefile.extra"
+
+source? $preconf
+
+if {[llength $programs] == 0} {
+  add-program main src
+}
+
+global build_tasks build_deps
+
+proc build {target deps args} {
+  global build_tasks build_deps
+  set build_deps($target) $deps
+  set build_tasks($target) $args
+}
+
+proc build-re {src} {
+  set target [file rootname $src].cc
+  build $target $src "\$(RE2C) \$(RE2CFLAGS) -o $target $src"
+  return $target
+}
+
+proc objpath {srcfile} {
+  return "\$(BUILDDIR)/[file rootname $srcfile].o"
+}
+
+proc build-cc {src includes} {
+  set target [objpath $src]
+  set deps $src
+  lappend deps {*}$includes
+  build $target [join $deps " "] \
+    "\$(MKDIR) \$(BUILDDIR)/$src" \
+    "\$(CXX) \$(CXXFLAGS) \$(INCLUDES) -c -o $target $src"
+  return $target
+}
+
+proc build-c {src includes} {
+  set target [objpath $src]
+  set deps $src
+  lappend deps {*}$includes
+  build $target [join $deps " "] \
+    "\$(MKDIR) \$(BUILDDIR)/$src" \
+    "\$(CC) \$(CFLAGS) \$(INCLUDES) -c -o $target $src"
+  return $target
+}
+
+proc build-lib {lib objs} {
+  set target "\$(BUILDDIR)/lib$lib.a"
+  set deps [join $objs " "]
+  build $target $deps \
+    "\$(MKDIR) \$(BUILDDIR)" \
+    "\$(RM) -f $target" \
+    "ar rsc $target $deps"
+  return $target
+}
+
+proc build-prog {prog objs libs} {
+  set target "\$(BINDIR)/$prog"
+  set deps [join [list {*}$objs {*}$libs] " "]
+  build $target $deps \
+    "\$(MKDIR) \$(BINDIR)" \
+    "\$(CXX) \$(OPT) -o $target $deps \$(LIBS)"
+  return $target
+}
+
+proc build-test {prog objs libs} {
+  set target "\$(BUILDDIR)/$prog"
+  set deps $objs
+  foreach lib $libs {
+    lappend deps "\$(BUILDDIR)/lib$lib.a"
+  }
+  set deps [join $deps " "]
+  build $target $deps \
+    "\$(MKDIR) \$(BINDIR)" \
+    "\$(CXX) \$(OPT) -o $target $deps \$(LIBS)"
+  return $target
+}
+
+proc find-files {src pat} {
+  global generated
+  set result [glob -nocomplain -- "$src/$pat"]
+  lappend result {*}[lsearch -glob -inline -all $generated "$src/$pat"]
+  return [lsort -unique $result]
+}
+
+proc build-app {name srcdir libdirs} {
+  global progs
+  set includes [find-files $srcdir *.h]
+  set objs {}
+  set libs {}
+  foreach libdir $libdirs {
+    lappend includes [find-files $libdir *.h]
+    lappend libs "\$(BUILDDIR)/lib$libdir.a"
+  }
+  if {[opt-bool with-re2c]} {
+    set resrc [find-files $srcdir *.re]
+  } else {
+    set resrc {}
+  }
+  set ccsrc [find-files $srcdir *.cc]
+  set csrc [find-files $srcdir *.c]
+  foreach srcfile $resrc {
+    global generated
+    set ccfile [build-re $srcfile]
+    lappend ccsrc $ccfile
+    lappend generated $ccfile
+  }
+  set ccsrc [lsort -unique $ccsrc]
+  foreach srcfile $ccsrc {
+    lappend objs [build-cc $srcfile $includes]
+  }
+  foreach srcfile $csrc {
+    lappend objs [build-c $srcfile $includes]
+  }
+  lappend progs [build-prog $name $objs $libs]
+}
+
+proc build-library {name libdirs} {
+  global boehm
+  set includes [find-files $name *.h]
+  set objs {}
+  set libs {}
+  if {"$name" == "adlib" && !$boehm} {
+    lappend includes "gclib/gc.h"
+  }
+  foreach libdir {libdirs} {
+    lappend includes [find-files $libdir *.h]
+    lappend libs "\$(BUILDDIR)/lib$libdir.a"
+  }
+  if {[opt-bool with-re2c]} {
+    set resrc [find-files $name *.re]
+  } else {
+    set resrc {}
+  }
+  set ccsrc [find-files $name *.cc]
+  set csrc [find-files $name *.c]
+  foreach srcfile $resrc {
+    global generated
+    set ccfile [build-re $srcfile]
+    lappend ccsrc $ccfile
+    lappend generated $ccfile
+  }
+  set ccsrc [lsort -unique $ccsrc]
+  foreach srcfile $ccsrc {
+    set stem [file rootname [file tail $srcfile]]
+    if {![regexp ^test $stem]} {
+      lappend objs [build-cc $srcfile $includes]
+    } else {
+      global tests
+      set obj [build-cc $srcfile $includes]
+      lappend tests [build-test $stem $obj [list $name {*}$libdirs]]
+    }
+  }
+  foreach srcfile $csrc {
+    lappend objs [build-c $srcfile $includes]
+  }
+  if {"$name" == "adlib" && !$boehm} {
+    lappend objs [build-c "gclib/gc.c" \
+      {gclib/gc.h gclib/dlmalloc.c gclib/tinygc.c}]
+  }
+  return [build-lib $name $objs]
+}
+
+proc emit-rules {} {
+  global build_deps build_tasks
+  add-rule ""
+  foreach target [lsort [array names build_deps]] {
+    set deps $build_deps($target)
+    set tasks $build_tasks($target)
+    add-rule "$target: $deps"
+    foreach task $tasks {
+      add-rule "\t$task"
+    }
+  }
+}
+
+proc build-all {} {
+  global libraries programs
+  foreach {lib deps} $libraries {
+    build-library $lib $deps
+  }
+  foreach {name dir deps} $programs {
+    build-app $name $dir $deps
+  }
+  emit-rules
+}
+
+options $options
+
+
+set includes "-I."
+set libs {}
+
+set boehmarg "no"
+opt-str with-boehm-gc boehmarg
+
+switch -glob -- $boehmarg {
+  yes -
+  1 -
+  on {
+    set boehm 1
+    set libs "-lgc"
+  }
+  no -
+  0 -
+  "" -
+  off {
+    set boehm 0
+  }
+  * {
+    set boehm 1
+    if {![file isdirectory $boehmarg]} {
+      user-error "Boehm GC option does not specify a valid directory"
+    }
+    lappend includes "-I$boehmarg/include"
+    lappend libs "-L$boehmarg/lib" "-lgc"
+  }
+}
+
+proc localname {path} {
+  return [regsub {[a-z]+/(.*)\.[a-z]+} $path "\\1"]
+}
+
+proc fmt-files {files} {
+  set output [join $files]
+  if {[string length $output] < 60} {
+    return $output
+  }
+  set output " \\"
+  set line "  "
+  foreach file $files {
+    if {[string length $line] > 2 && [string length "$line $file"] > 72} {
+      append line "\\"
+      append output "\n" $line
+      set line "  "
+    }
+    append line $file " "
+  }
+  if {[string length $line] > 2} {
+    append output "\n" [string trimright $line]
+  }
+  return $output
+}
+
+global inttypes csize iquote
+set inttypes {char short int long}
+
+proc def-int-type {name prefix size} {
+  global inttypes csize have_long_long
+  if {$name == "Int"} {
+    set sizename "SIZEOF_INTEGER"
+  } else {
+    set sizename "SIZEOF_[string toupper $name]"
+  }
+  foreach type $inttypes {
+    if {$csize($type) == $size} {
+      define $name "$prefix $type"
+      define $sizename $size
+      return
+    }
+  }
+  if {$have_long_long} {
+    define $name "$prefix long long"
+    define $sizename $csize(long long)
+  } else {
+    define $name "$prefix long"
+    define $sizename $csize(long)
+  }
+}
+
+proc check-tmp-flags {flags} {
+  msg-checking "Checking whether the C++ compiler accepts $flags..."
+  set works [cctest -cflags $flags]
+  if {$works} {
+    msg-result yes
+    return 1
+  } else {
+    msg-result no
+    return 0
+  }
+}
+
+cc-check-tools ar
+if {![opt-bool with-re2c]} {
+  set re2c 0
+} else {
+  cc-check-progs re2c
+  msg-checking "Checking re2c version..."
+  if {[catch {exec re2c --version} re2cout]} {
+    set re2c 0
+    msg-result "unknown (disable re2c)"
+  } else {
+    set re2c 1
+    switch -glob -- $re2cout {
+      "re2c 1.*.*" {
+        msg-result "($re2cout) ok"
+      }
+      * {
+        msg-result "($re2cout) outdated"
+      }
+    }
+  }
+}
+
+define RE2CFLAGS ""
+if {![is-defined RE2C]} {
+  # make sure accidental re2c invocations don't fail
+  define RE2C "@true"
+}
+cc-with {-lang c++} {
+  # Does long long exist as a type?
+  global have_long_long
+  set have_long_long [cc-check-types "long long"]
+  if {$have_long_long} {
+    lappend inttypes "long long"
+    define LongWord "unsigned long long"
+    define LongInt "long long"
+    define LONG_FMT "ll"
+  } else {
+    define LongWord "unsigned long"
+    define LongInt "long"
+    define LONG_FMT "l"
+  }
+  # Check all int sizes
+  foreach type $inttypes {
+    set csize($type) [cc-check-sizeof $type]
+  }
+  set csize(voidp) [cc-check-sizeof "void *"]
+  if {$have_long_long && $csize(long long) >= 8} {
+    define HAVE_64BIT_SUPPORT 2
+  }
+  if {$csize(long) >= 8} {
+    define HAVE_64BIT_SUPPORT 1
+  }
+  cc-with {-includes sys/types.h} {
+    set have_off_t [cc-check-types "off_t"]
+    if {$have_off_t} {
+      set csize(off_t) [cc-check-sizeof "off_t"]
+    }
+  }
+  if {$csize(long) == $csize(voidp)} {
+    define WORD_FMT "l"
+  } elseif {$have_long_long && $csize(long long) == $csize(voidp)} {
+    define WORD_FMT "ll"
+  } else {
+    define WORD_FMT ""
+  }
+  cc-check-includes dirent.h
+  define OPT ""
+  foreach opt {{-g -O2} {-g -O} {-g}} {
+    if {[check-tmp-flags $opt]} {
+      define OPT $opt
+      break
+    }
+  }
+  if {[opt-bool adlibdev]} {
+    cc-check-standards c++98 c++03
+  }
+  msg-checking "Checking for isatty()..."
+  if {[cctest -code {isatty(0);} -includes unistd.h]} {
+    msg-result yes
+    define HAVE_ISATTY 1
+  } else {
+    msg-result no
+  }
+}
+
+def-int-type Word unsigned $csize(voidp)
+def-int-type Word8 unsigned 1
+def-int-type Word16 unsigned 2
+def-int-type Word32 unsigned 4
+def-int-type Word64 unsigned 8
+def-int-type Int signed $csize(voidp)
+def-int-type Int8 signed 1
+def-int-type Int16 signed 2
+def-int-type Int32 signed 4
+def-int-type Int64 signed 8
+
+if {$have_off_t} {
+  def-int-type Offset signed $csize(off_t)
+}
+
+source? $postconf
+
+if {[opt-bool adlibdev]} {
+  define DEFAULT_TARGET "\$(TARGETS)"
+  define CHECKS 1
+} else {
+  define DEFAULT_TARGET "prog"
+  define CHECKS 0
+}
+
+if {[opt-bool checks]} {
+  define CHECKS 1
+}
+
+define USE_BOEHM_GC $boehm
+
+define RULES ""
+
+global rules
+set rules ""
+
+proc add-rule {rule} {
+  global rules
+  append rules $rule\n
+}
+
+build-all
+
+define BUILDDIR $builddir
+define BINDIR $bindir
+
+define TESTS [fmt-files $tests]
+define PROGS [fmt-files $progs]
+
+set extra "[readfile setup/$makeextra]
+[readfile develop/$makeextra]"
+foreach {name value} $makevars {
+  append extra "$name=$value\n"
+}
+
+define EXTRA $extra
+define GENERATED [fmt-files [lsort -unique $generated]]
+
+define RULES $rules
+define LIBS [join $libs]
+define INCLUDES [join $includes]
+
+define CONFIG_DEFS "#include \"adlib/config-defs.h\""
+define CONFIGITEMS "adlib/config.h adlib/config-defs.h"
+
+source? $presetup
+
+make-config-header adlib/config-defs.h -auto USE_* 
+make-template cnf/config.h.in adlib/config.h
+make-template cnf/Makefile.in Makefile
+
+source? $postsetup
+

@@ -1,0 +1,33 @@
+JOBS = 4
+WAF = tools/waf
+WFLAGS = -j$(JOBS)
+CONFIGARGS = @CONFIGARGS@
+
+all release:
+	$(WAF) build install $(WFLAGS)
+debug:
+	$(WAF) build install --debug $(WFLAGS)
+force:
+	$(WAF) clean build install $(WFLAGS)
+forcedebug:
+	$(WAF) clean build install --debug $(WFLAGS)
+clean:
+	$(WAF) clean $(WFLAGS)
+config configure:
+	$(WAF) configure $(CONFIGARGS)
+distclean:
+	-$(WAF) uninstall $(WFLAGS) 2>/dev/null
+	-$(WAF) distclean $(WFLAGS)
+distcheck:
+	$(WAF) distcheck $(WFLAGS)
+tests:
+	$(WAF) build $(WFLAGS) --with-tests
+test: tests
+	@for f in build/test/*/*; do \
+	  test -x $$f || continue; \
+	  echo === $$f; \
+	  $$f; \
+	done
+.PHONY: all build opt release force forceopt \
+	clean config configure distclean distcheck \
+	test tests

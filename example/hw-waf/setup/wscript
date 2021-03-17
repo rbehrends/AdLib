@@ -1,0 +1,2 @@
+def build(bld):
+  bld.adlib_program("main", "src")
